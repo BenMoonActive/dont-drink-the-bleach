@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>אל תשתה ת'אקונומיקה!</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, Helvetica, sans-serif;
+            background-color: #87CEEB;
+            color: white;
+            user-select: none;
+            direction: rtl;
+        }
+
+        canvas {
+            cursor: grab;
+            display: block;
+        }
+
+        body.clicking canvas {
+            cursor: grabbing;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #header {
+            margin-top: 10px;
+            text-align: center;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 4rem;
+            margin: 0;
+            color: #ff4444;
+            text-transform: uppercase;
+            text-shadow: 
+                -2px -2px 0 #000,  
+                 2px -2px 0 #000,
+                -2px  2px 0 #000,
+                 2px  2px 0 #000,
+                 4px  4px 0 #000;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        #timer {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #ffd700;
+            text-shadow: 2px 2px 0 #000;
+            direction: ltr;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        #game-over-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6); 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto; 
+            z-index: 20;
+            backdrop-filter: blur(4px);
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        #game-over-content {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #game-over-content h2 {
+            font-size: 5rem;
+            color: #ff0000;
+            text-shadow: 3px 3px 0 #000;
+            margin: 0 0 20px 0;
+            text-align: center;
+        }
+
+        #game-over-content p {
+            font-size: 2rem;
+            margin-bottom: 30px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 20px 50px;
+            font-size: 2rem;
+            cursor: pointer;
+            border-radius: 50px;
+            box-shadow: 0 8px 0 #2E7D32;
+            font-weight: 900;
+            border: 3px solid #fff;
+            transition: transform 0.1s;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        button:active {
+            transform: translateY(4px);
+            box-shadow: 0 4px 0 #2E7D32;
+        }
+
+        .floating-text {
+            position: absolute;
+            font-weight: 900;
+            pointer-events: none;
+            animation: floatUp 1.5s ease-out forwards;
+            text-shadow: 2px 2px 0 #000;
+            white-space: nowrap;
+            font-family: Arial, Helvetica, sans-serif;
+            text-transform: uppercase;
+            z-index: 15;
+        }
+
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-80px) scale(1.1); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="header">
+            <h1>אל תשתה ת'אקונומיקה!</h1>
+            <div id="timer">0.00s</div>
+        </div>
+    </div>
+
+    <div id="game-over-overlay" class="hidden">
+        <div id="game-over-content">
+            <h2>אוי לא!</h2>
+            <p id="score-text"></p>
+            <button id="restart-btn">נסה שוב</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- CONSTANTS ---
+        const ROOM_SIZE = 30; 
+        const WALL_HEIGHT = 18;
+        const SHELL_THICKNESS = 4;
+        const KID_SPEED_PPS = 8.0; 
+        const PUSH_DECAY = 0.90;
+        const BOUNCE_SPEED = 12; 
+        const FRUSTUM_SIZE = 70; 
+        const PUSH_FORCE = 2.0; 
+
+        // --- TEXT ---
+        const PLAYER_PHRASES = [
+            "לא!", "עצור!", "מסוכן!", "פויה!",
+            "לאאאא!", "זוז מפה!", "רד מזה!", "ממש לא!", "תעזוב את זה!", "לא היום!"
+        ];
+
+        const KID_PHRASES = [
+            "מיץ!", "יאמי!", "אני צמא!", "בקבוק!",
+            "רוצה!", "תביא!", "נוצץ!", "תן לי!"
+        ];
+
+        // --- GLOBALS ---
+        let scene, camera, renderer;
+        let bleachGroup;
+        // Replaced single kid variables with an array of kid objects
+        let kids = []; 
+        let spawnFlags = { door: false, window: false };
+        
+        let raycaster, mouse;
+        let isPlaying = true; 
+        let startTime = Date.now();
+        let lastTime = Date.now();
+        
+        let particles = [];
+
+        // Audio Context
+        let audioCtx;
+
+        // DOM
+        const timerEl = document.getElementById('timer');
+        const gameOverOverlay = document.getElementById('game-over-overlay');
+        const restartBtn = document.getElementById('restart-btn');
+        const scoreText = document.getElementById('score-text');
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); 
+
+            const aspect = window.innerWidth / window.innerHeight;
+            
+            camera = new THREE.OrthographicCamera(
+                FRUSTUM_SIZE * aspect / -2,
+                FRUSTUM_SIZE * aspect / 2,
+                FRUSTUM_SIZE / 2,
+                FRUSTUM_SIZE / -2,
+                1,
+                1000
+            );
+            
+            camera.position.set(40, 40, 40); 
+            camera.lookAt(0, 5, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            dirLight.position.set(20, 50, 20);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            buildRoom();
+            buildDecor();
+            bleachGroup = buildBleach();
+            
+            // Initial kid
+            spawnKid(new THREE.Vector3(-8, 0, 8));
+
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('mousedown', onDocumentMouseDown, false);
+            window.addEventListener('touchstart', onDocumentTouchStart, {passive: false});
+            restartBtn.addEventListener('click', restartGame);
+
+            lastTime = Date.now();
+            animate();
+        }
+
+        // --- AUDIO ---
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+
+            if (type === 'push') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(300, now);
+                osc.frequency.exponentialRampToValueAtTime(50, now + 0.15);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+                osc.start(now);
+                osc.stop(now + 0.15);
+            } else if (type === 'spawn') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(400, now);
+                osc.frequency.linearRampToValueAtTime(800, now + 0.1);
+                gainNode.gain.setValueAtTime(0.05, now);
+                gainNode.gain.linearRampToValueAtTime(0, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            } else if (type === 'gameover') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(200, now);
+                osc.frequency.linearRampToValueAtTime(50, now + 1.0);
+                gainNode.gain.setValueAtTime(0.2, now);
+                gainNode.gain.linearRampToValueAtTime(0, now + 1.0);
+                osc.start(now);
+                osc.stop(now + 1.0);
+            }
+        }
+
+        // --- SPAWNING & KID MANAGEMENT ---
+        function spawnKid(position) {
+            const mesh = buildKidMesh();
+            mesh.position.copy(position);
+            scene.add(mesh);
+
+            // Create kid logic object attached to the mesh for easy lookup or parallel array
+            const kidData = {
+                mesh: mesh,
+                velocity: new THREE.Vector3(0,0,0),
+                pushVector: new THREE.Vector3(0,0,0),
+                state: 'MOVING',
+                stateTimer: 0,
+                lastBounceY: 0,
+                parts: mesh.userData.parts // Refs to body parts
+            };
+            
+            // Link mesh back to data for raycasting
+            mesh.userData.gameKid = kidData;
+            
+            kids.push(kidData);
+            
+            // Effect
+            spawnSparks(position);
+            playSound('spawn');
+        }
+
+        function restartGame() {
+            initAudio(); // Ensure audio is ready on user gesture
+            isPlaying = true;
+            startTime = Date.now();
+            
+            // Remove old kids
+            kids.forEach(k => scene.remove(k.mesh));
+            kids = [];
+            
+            // Reset Flags
+            spawnFlags = { door: false, window: false };
+            
+            // Spawn first kid
+            spawnKid(new THREE.Vector3(-8, 0, 8));
+            
+            gameOverOverlay.classList.add('hidden');
+        }
+
+        function gameOver() {
+            if(!isPlaying) return;
+            isPlaying = false;
+            playSound('gameover');
+            const survivalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+            scoreText.innerHTML = `הוא שתה את האקונומיקה!<br>שרדתם: <strong style="color:gold">${survivalTime} שניות</strong>`;
+            gameOverOverlay.classList.remove('hidden');
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const now = Date.now();
+            const dt = Math.min((now - lastTime) / 1000, 0.1); 
+            lastTime = now;
+
+            updateParticles();
+
+            if (isPlaying) {
+                updateGame(now, dt);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function updateGame(now, dt) {
+            const elapsed = (now - startTime) / 1000;
+            timerEl.innerText = elapsed.toFixed(2) + 's';
+
+            // --- SPAWNING LOGIC ---
+            // Door Kid (30s) - Spawns near door (-ROOM_SIZE/2 + offset, 0, 8)
+            if (elapsed > 30 && !spawnFlags.door) {
+                spawnKid(new THREE.Vector3(-14, 0, 8)); // Door position roughly
+                spawnFlags.door = true;
+                spawnFloatingText("עוד אחד?!", window.innerWidth/2, window.innerHeight/2, "#FF0000");
+            }
+            // Window Kid (60s) - Spawns near window (-5, 0, -ROOM_SIZE/2 + offset)
+            if (elapsed > 60 && !spawnFlags.window) {
+                spawnKid(new THREE.Vector3(-5, 0, -14)); // Window position roughly
+                spawnFlags.window = true;
+                spawnFloatingText("דרך החלון?!", window.innerWidth/2, window.innerHeight/2, "#FF0000");
+            }
+
+            const targetPos = new THREE.Vector3(8, 0, -8); 
+
+            // Update All Kids
+            kids.forEach(kid => {
+                updateSingleKid(kid, dt, elapsed, targetPos, now);
+            });
+        }
+
+        function updateSingleKid(kid, dt, elapsed, targetPos, now) {
+            const group = kid.mesh;
+            
+            // Safety Check
+            if (isNaN(group.position.x) || isNaN(group.position.z)) {
+                group.position.set(-8, 0, 8);
+            }
+
+            // AI State
+            if (kid.state === 'MOVING' && kid.pushVector.length() < 0.1) {
+                if (Math.random() < 0.005) { 
+                    kid.state = 'IDLE';
+                    kid.stateTimer = now + 1000 + Math.random() * 1500;
+                    const screenPos = getScreenPosition(group);
+                    spawnFloatingText("...", screenPos.x, screenPos.y, '#ffffff');
+                }
+            } else if (kid.state === 'IDLE') {
+                if (now > kid.stateTimer) kid.state = 'MOVING';
+            }
+
+            // Movement Logic
+            // 1. External Push
+            if (kid.pushVector.length() > 0.1) {
+                const move = kid.pushVector.clone().multiplyScalar(dt * 15);
+                group.position.add(move);
+                kid.pushVector.multiplyScalar(PUSH_DECAY);
+                
+                // Spin
+                kid.parts.bodyPivot.rotation.y += 0.4;
+                
+                if(kid.pushVector.length() < 0.1) {
+                    kid.pushVector.set(0,0,0);
+                    kid.parts.bodyPivot.rotation.y = 0;
+                }
+            } 
+            // 2. Walk
+            else if (kid.state === 'MOVING') {
+                const dir = new THREE.Vector3().subVectors(targetPos, group.position);
+                dir.y = 0;
+                dir.normalize();
+
+                // Unique wobble based on kid ID (use memory address concept or random offset stored)
+                const offset = group.id; 
+                dir.x += Math.sin(elapsed * 2.0 + offset) * 0.5;
+                dir.z += Math.cos(elapsed * 2.5 + offset) * 0.5;
+                dir.normalize();
+
+                const moveDist = KID_SPEED_PPS * dt;
+                group.position.add(dir.multiplyScalar(moveDist));
+
+                const lookTarget = group.position.clone().add(dir);
+                group.lookAt(lookTarget.x, group.position.y, lookTarget.z);
+
+                // Animation
+                const bouncePhase = elapsed * BOUNCE_SPEED + offset;
+                const bounceHeight = Math.abs(Math.sin(bouncePhase)) * 0.5;
+                group.position.y = bounceHeight;
+
+                if (kid.lastBounceY > 0.1 && bounceHeight <= 0.1) spawnDust(group.position);
+                kid.lastBounceY = bounceHeight;
+
+                kid.parts.bodyPivot.rotation.z = Math.sin(bouncePhase) * 0.15;
+                kid.parts.bodyPivot.rotation.y = 0;
+                kid.parts.tongue.rotation.z = Math.sin(elapsed * 15) * 0.2;
+
+                if (Math.random() < 0.002) { 
+                    const phrase = KID_PHRASES[Math.floor(Math.random() * KID_PHRASES.length)];
+                    const screenPos = getScreenPosition(group);
+                    spawnFloatingText(phrase, screenPos.x, screenPos.y, '#ffffff');
+                }
+            } else {
+                group.position.y = 0;
+            }
+
+            // Boundaries
+            const limit = ROOM_SIZE / 2 - 2.5;
+            if (group.position.x > limit) { group.position.x = limit; kid.pushVector.x *= -0.5; }
+            if (group.position.x < -limit) { group.position.x = -limit; kid.pushVector.x *= -0.5; }
+            if (group.position.z > limit) { group.position.z = limit; kid.pushVector.z *= -0.5; }
+            if (group.position.z < -limit) { group.position.z = -limit; kid.pushVector.z *= -0.5; }
+
+            // Collision
+            const dist = group.position.distanceTo(targetPos);
+            if (dist < 3.5) gameOver();
+        }
+
+        function updateParticles() {
+            for(let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                if(particles[i].life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        function handleInput(x, y) {
+            // Init audio on first interaction
+            initAudio();
+            
+            if (!isPlaying) return;
+            mouse.x = (x / window.innerWidth) * 2 - 1;
+            mouse.y = -(y / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            
+            // Raycast against scene children to find kids
+            // We need to map intersected mesh back to the specific kid object
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            
+            for (let i = 0; i < intersects.length; i++) {
+                // Traverse up to find if this mesh belongs to a kid group
+                let obj = intersects[i].object;
+                while (obj.parent && obj.parent !== scene) {
+                    obj = obj.parent;
+                }
+                
+                // Check if this top-level object is a kid in our array
+                const hitKid = kids.find(k => k.mesh === obj);
+                if (hitKid) {
+                    pushKid(hitKid);
+                    const phrase = PLAYER_PHRASES[Math.floor(Math.random() * PLAYER_PHRASES.length)];
+                    spawnFloatingText(phrase, x, y, '#ff4444');
+                    spawnSparks(intersects[i].point);
+                    return; // Only push one at a time
+                }
+            }
+        }
+
+        function pushKid(kid) {
+            playSound('push');
+            const dangerPos = bleachGroup.position.clone();
+            const kidPos = kid.mesh.position.clone();
+            
+            let pushDir = new THREE.Vector3().subVectors(kidPos, dangerPos).normalize();
+            pushDir.x += (Math.random() - 0.5) * 0.8;
+            pushDir.z += (Math.random() - 0.5) * 0.8;
+            pushDir.y = 0;
+            pushDir.normalize();
+
+            kid.state = 'MOVING';
+            kid.pushVector.copy(pushDir.multiplyScalar(PUSH_FORCE)); 
+            
+            // Visual Flash
+            kid.mesh.traverse(child => {
+                 if(child.isMesh && child.material && child.material.emissive) {
+                    child.material.emissive.setHex(0xffffff);
+                    setTimeout(() => { if(child.material) child.material.emissive.setHex(0x000000); }, 100);
+                 }
+            });
+        }
+
+        // --- EVENTS ---
+        function onDocumentMouseDown(event) {
+            document.body.classList.add('clicking');
+            handleInput(event.clientX, event.clientY);
+        }
+        function onDocumentMouseUp() { document.body.classList.remove('clicking'); }
+        function onDocumentTouchStart(event) {
+            if(event.touches.length > 0) {
+                event.preventDefault(); 
+                document.body.classList.add('clicking');
+                handleInput(event.touches[0].clientX, event.touches[0].clientY);
+            }
+        }
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.left = -FRUSTUM_SIZE * aspect / 2;
+            camera.right = FRUSTUM_SIZE * aspect / 2;
+            camera.top = FRUSTUM_SIZE / 2;
+            camera.bottom = -FRUSTUM_SIZE / 2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- ASSETS ---
+        class Particle {
+            constructor(type, position) {
+                this.type = type; 
+                this.life = 1.0;
+                this.position = position.clone();
+                let geo, mat;
+                if (type === 'dust') {
+                    geo = new THREE.SphereGeometry(0.3, 4, 4);
+                    mat = new THREE.MeshBasicMaterial({ color: 0xdddddd, transparent: true });
+                    this.velocity = new THREE.Vector3((Math.random()-0.5)*0.2, Math.random()*0.2, (Math.random()-0.5)*0.2);
+                    this.decay = 0.03;
+                } else {
+                    geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+                    mat = new THREE.MeshBasicMaterial({ color: 0xFFFF00 });
+                    this.velocity = new THREE.Vector3((Math.random()-0.5)*1.5, (Math.random()-0.5)*1.5+1.0, (Math.random()-0.5)*1.5);
+                    this.decay = 0.05;
+                }
+                this.mesh = new THREE.Mesh(geo, mat);
+                this.mesh.position.copy(this.position);
+                scene.add(this.mesh);
+            }
+            update() {
+                this.position.add(this.velocity);
+                this.mesh.position.copy(this.position);
+                this.life -= this.decay;
+                if (this.type === 'dust') {
+                    this.mesh.material.opacity = this.life;
+                    this.mesh.scale.multiplyScalar(0.95);
+                } else {
+                    this.mesh.rotation.x += 0.2;
+                }
+                if (this.life <= 0) {
+                    scene.remove(this.mesh);
+                    this.mesh.geometry.dispose();
+                    this.mesh.material.dispose();
+                }
+            }
+        }
+        function spawnDust(pos) { for(let i=0; i<3; i++) particles.push(new Particle('dust', pos)); }
+        function spawnSparks(pos) { for(let i=0; i<8; i++) particles.push(new Particle('spark', pos)); }
+
+        function spawnFloatingText(text, x, y, color) {
+            const el = document.createElement('div');
+            el.className = 'floating-text';
+            el.innerText = text;
+            el.style.left = x + 'px';
+            el.style.top = y + 'px';
+            el.style.color = color;
+            el.style.fontSize = (Math.random() * 10 + 20) + 'px';
+            el.style.transform = `rotate(${Math.random() * 20 - 10}deg)`;
+            document.body.appendChild(el);
+            setTimeout(() => el.remove(), 1500);
+        }
+
+        function getScreenPosition(object) {
+            const pos = object.position.clone();
+            pos.y += 4; 
+            pos.project(camera);
+            const x = (pos.x * .5 + .5) * window.innerWidth;
+            const y = (pos.y * -.5 + .5) * window.innerHeight;
+            return { x, y };
+        }
+
+        // --- SCENE BUILDERS ---
+        function buildRoom() {
+            const floorGeo = new THREE.BoxGeometry(ROOM_SIZE, SHELL_THICKNESS, ROOM_SIZE);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0xdeb887 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.position.set(0, -SHELL_THICKNESS/2, 0); 
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0xF0F8FF }); 
+            const wall1Geo = new THREE.BoxGeometry(ROOM_SIZE + SHELL_THICKNESS, WALL_HEIGHT + SHELL_THICKNESS, SHELL_THICKNESS);
+            const wall1 = new THREE.Mesh(wall1Geo, wallMat);
+            wall1.position.set(0, (WALL_HEIGHT - SHELL_THICKNESS)/2, -ROOM_SIZE/2 - SHELL_THICKNESS/2);
+            wall1.receiveShadow = true;
+            scene.add(wall1);
+
+            const wall2Geo = new THREE.BoxGeometry(SHELL_THICKNESS, WALL_HEIGHT + SHELL_THICKNESS, ROOM_SIZE + SHELL_THICKNESS);
+            const wall2 = new THREE.Mesh(wall2Geo, wallMat);
+            wall2.position.set(-ROOM_SIZE/2 - SHELL_THICKNESS/2, (WALL_HEIGHT - SHELL_THICKNESS)/2, -SHELL_THICKNESS/2);
+            wall2.receiveShadow = true;
+            scene.add(wall2);
+            
+            const baseboardGeo = new THREE.BoxGeometry(ROOM_SIZE, 1, 0.5);
+            const baseboardMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const bb1 = new THREE.Mesh(baseboardGeo, baseboardMat);
+            bb1.position.set(0, 0.5, -ROOM_SIZE/2 + 0.25);
+            scene.add(bb1);
+            const bb2 = new THREE.Mesh(baseboardGeo, baseboardMat);
+            bb2.rotation.y = Math.PI / 2;
+            bb2.position.set(-ROOM_SIZE/2 + 0.25, 0.5, 0);
+            scene.add(bb2);
+        }
+
+        function buildDecor() {
+            const carpetGeo = new THREE.CircleGeometry(6, 32);
+            const carpetMat = new THREE.MeshStandardMaterial({ color: 0xFF69B4 });
+            const carpet = new THREE.Mesh(carpetGeo, carpetMat);
+            carpet.rotation.x = -Math.PI / 2;
+            carpet.position.set(0, 0.05, 0);
+            carpet.receiveShadow = true;
+            scene.add(carpet);
+
+            const winFrameGeo = new THREE.BoxGeometry(8, 6, 0.5);
+            const winFrameMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const winFrame = new THREE.Mesh(winFrameGeo, winFrameMat);
+            winFrame.position.set(-5, 10, -ROOM_SIZE/2 + 0.3);
+            scene.add(winFrame);
+            
+            const winGlassGeo = new THREE.PlaneGeometry(7, 5);
+            const winGlassMat = new THREE.MeshBasicMaterial({ color: 0x87CEEB });
+            const winGlass = new THREE.Mesh(winGlassGeo, winGlassMat);
+            winGlass.position.set(-5, 10, -ROOM_SIZE/2 + 0.6);
+            scene.add(winGlass);
+
+            const doorGeo = new THREE.BoxGeometry(0.5, 14, 7);
+            const doorMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const door = new THREE.Mesh(doorGeo, doorMat);
+            door.position.set(-ROOM_SIZE/2 + 0.3, 7, 8);
+            scene.add(door);
+            
+            const knobGeo = new THREE.SphereGeometry(0.3);
+            const knobMat = new THREE.MeshStandardMaterial({ color: 0xFFD700 });
+            const knob = new THREE.Mesh(knobGeo, knobMat);
+            knob.position.set(-ROOM_SIZE/2 + 0.6, 7, 6);
+            scene.add(knob);
+
+            const tableGroup = new THREE.Group();
+            const legGeo = new THREE.BoxGeometry(0.5, 4, 0.5);
+            const legMat = new THREE.MeshStandardMaterial({ color: 0x5D4037 });
+            const positions = [[-3, 2, -3], [3, 2, -3], [-3, 2, 3], [3, 2, 3]];
+            positions.forEach(pos => {
+                const leg = new THREE.Mesh(legGeo, legMat);
+                leg.position.set(...pos);
+                leg.castShadow = true;
+                tableGroup.add(leg);
+            });
+            const topGeo = new THREE.BoxGeometry(7, 0.5, 7);
+            const top = new THREE.Mesh(topGeo, legMat);
+            top.position.set(0, 4.25, 0);
+            top.castShadow = true;
+            top.receiveShadow = true;
+            tableGroup.add(top);
+            tableGroup.position.set(8, 0, -8);
+            scene.add(tableGroup);
+        }
+
+        function buildBleach() {
+            const bleach = new THREE.Group();
+            const bodyGeo = new THREE.CylinderGeometry(0.8, 0.8, 2, 16);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 1;
+            body.castShadow = true;
+            bleach.add(body);
+
+            const labelGeo = new THREE.CylinderGeometry(0.81, 0.81, 1, 16, 1, true, 0, Math.PI);
+            const labelMat = new THREE.MeshBasicMaterial({ color: 0x0000FF, side: THREE.DoubleSide });
+            const label = new THREE.Mesh(labelGeo, labelMat);
+            label.position.y = 1;
+            label.rotation.y = -Math.PI / 4;
+            bleach.add(label);
+
+            const neckGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.5);
+            const neck = new THREE.Mesh(neckGeo, bodyMat);
+            neck.position.y = 2.25;
+            bleach.add(neck);
+
+            const capGeo = new THREE.CylinderGeometry(0.35, 0.4, 0.4);
+            const capMat = new THREE.MeshStandardMaterial({ color: 0xFF4500 });
+            const cap = new THREE.Mesh(capGeo, capMat);
+            cap.position.y = 2.5;
+            bleach.add(cap);
+            
+            const skullGeo = new THREE.SphereGeometry(0.2, 8, 8);
+            const skullMat = new THREE.MeshBasicMaterial({color: 0x000000});
+            const skull = new THREE.Mesh(skullGeo, skullMat);
+            skull.position.set(0, 1.2, 0.65);
+            skull.scale.z = 0.2;
+            bleach.add(skull);
+
+            bleach.position.set(8, 4.5, -8);
+            scene.add(bleach);
+            return bleach;
+        }
+
+        // Returns a Mesh Group for the kid (pure visuals)
+        function buildKidMesh() {
+            const kid = new THREE.Group();
+            const skinMat = new THREE.MeshStandardMaterial({ color: 0xFFC0CB });
+            const shirtMat = new THREE.MeshStandardMaterial({ color: 0x32CD32 });
+            const pantsMat = new THREE.MeshStandardMaterial({ color: 0x0000CD });
+
+            const kidBodyPivot = new THREE.Group();
+            kid.add(kidBodyPivot);
+
+            const bodyGeo = new THREE.CylinderGeometry(0.8, 1, 1.5);
+            const body = new THREE.Mesh(bodyGeo, shirtMat);
+            body.position.y = 1.8;
+            body.castShadow = true;
+            kidBodyPivot.add(body);
+
+            const legGeo = new THREE.CylinderGeometry(0.4, 0.4, 1.2);
+            const leftLeg = new THREE.Mesh(legGeo, pantsMat);
+            leftLeg.position.set(0.4, 0.6, 0);
+            kidBodyPivot.add(leftLeg);
+            const rightLeg = new THREE.Mesh(legGeo, pantsMat);
+            rightLeg.position.set(-0.4, 0.6, 0);
+            kidBodyPivot.add(rightLeg);
+
+            const armGeo = new THREE.SphereGeometry(0.4);
+            const leftArm = new THREE.Mesh(armGeo, skinMat);
+            leftArm.position.set(1, 2, 0);
+            kidBodyPivot.add(leftArm);
+            const rightArm = new THREE.Mesh(armGeo, skinMat);
+            rightArm.position.set(-1, 2, 0);
+            kidBodyPivot.add(rightArm);
+
+            const kidHeadPivot = new THREE.Group();
+            kidHeadPivot.position.y = 3.2; 
+            kidBodyPivot.add(kidHeadPivot);
+
+            const headGeo = new THREE.SphereGeometry(1.2, 32, 32);
+            const head = new THREE.Mesh(headGeo, skinMat);
+            head.castShadow = true;
+            kidHeadPivot.add(head);
+
+            const kidEyes = new THREE.Group();
+            const eyeWhiteGeo = new THREE.SphereGeometry(0.35, 16, 16);
+            const eyeWhiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const pupilGeo = new THREE.SphereGeometry(0.15, 8, 8);
+            const pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+
+            const lEyeGroup = new THREE.Group();
+            lEyeGroup.add(new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat));
+            const lPupil = new THREE.Mesh(pupilGeo, pupilMat); lPupil.position.z = 0.3;
+            lEyeGroup.add(lPupil);
+            lEyeGroup.position.set(0.4, 0.2, 1.0);
+            kidEyes.add(lEyeGroup);
+
+            const rEyeGroup = new THREE.Group();
+            rEyeGroup.add(new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat));
+            const rPupil = new THREE.Mesh(pupilGeo, pupilMat); rPupil.position.z = 0.3;
+            rEyeGroup.add(rPupil);
+            rEyeGroup.position.set(-0.4, 0.2, 1.0);
+            kidEyes.add(rEyeGroup);
+            
+            kidHeadPivot.add(kidEyes);
+
+            const tongueGeo = new THREE.BoxGeometry(0.3, 0.05, 0.4);
+            const tongueMat = new THREE.MeshStandardMaterial({ color: 0xff6666 });
+            const kidTongue = new THREE.Mesh(tongueGeo, tongueMat);
+            kidTongue.position.set(0.1, -0.4, 1.1);
+            kidTongue.rotation.x = 0.2;
+            kidHeadPivot.add(kidTongue);
+
+            // Store parts for animation
+            kid.userData.parts = {
+                bodyPivot: kidBodyPivot,
+                headPivot: kidHeadPivot,
+                tongue: kidTongue
+            };
+
+            return kid;
+        }
+
+        init();
+    </script>
+</body>
+</html>
